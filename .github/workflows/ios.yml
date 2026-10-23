@@ -108,7 +108,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ needs.check.outputs.variant }} IPA
+    name: Build ${{ inputs.variant || 'full' }} IPA
     needs: check
     if: needs.check.outputs.skip != 'true'
     runs-on: macos-15
