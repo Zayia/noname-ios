@@ -383,6 +383,11 @@ Documents/Noname/
 * **不能后台运行**：切到后台会被系统挂起，回到前台继续（和安卓的 pause/resume 行为接近）。
 * **iOS 27 起必须使用 UIScene 生命周期**：本工程已适配（`SceneDelegate.swift` + `UIApplicationSceneManifest`），
   用 Xcode 27 构建也不会闪退。
+* **音量控制走 Web Audio**：iOS 的 WebKit 会忽略 `HTMLMediaElement.volume`（读回来永远是 1），
+  所以游戏里的「音乐音量 / 音效音量」在 iPhone 上原本是无效的。客户端在 `web-preload.js` 里
+  把每个音频元素接进 Web Audio 的 `GainNode`，用 gain 真正控制音量。需要用户先触摸一次屏幕
+  （iOS 要求 AudioContext 在用户手势里 resume）；调试时可以看 `window.__nonameAudio.state`
+  是否为 `running`。
 * **不支持 iOS < 16.4**：游戏要求 Safari 16.4 级别的 WebKit。
 * **不能上架 App Store**：内置本地 HTTP 服务 + 完整游戏资源，且项目是 GPL-3.0，只适合自签名分发。
 

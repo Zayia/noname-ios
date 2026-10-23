@@ -12,6 +12,174 @@
 
 import browserReady from "./noname/init/browser.js";
 
+/**
+ * iOS 的音量补丁。
+ *
+ * WebKit 在 iOS 上会忽略 `HTMLMediaElement.volume`（属性可以写，但读取会被重置成 1，
+ * 实际输出也不受它控制，音量只能靠机身按键）。后果就是游戏里的
+ * 「音乐音量 / 音效音量」在 iPhone 上完全没反应。
+ *
+ * 做法：把每个 <audio>/<video> 接进 Web Audio 的 GainNode，用 gain 真正控制音量；
+ * 元素自己的 volume 继续保留（游戏逻辑会读它）。
+ *
+ * 注意：
+ *   1. iOS 的 AudioContext 要等用户第一次触摸才能 resume，所以在 resume 之前不接管，
+ *      否则接进还没运行的音频图会直接没声音；
+ *   2. 同一个元素只能 createMediaElementSource 一次，所以 source 缓存起来复用；
+ *   3. 播放结束后断开 gain，避免长时间游戏积累一堆音频节点。
+ */
+function installIosAudioVolume() {
+	if (window.__nonameAudioVolumeInstalled) return;
+	window.__nonameAudioVolumeInstalled = true;
+
+	const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+	if (!AudioContextClass || !window.HTMLMediaElement) return;
+
+	const proto = HTMLMediaElement.prototype;
+	const volumeDescriptor = Object.getOwnPropertyDescriptor(proto, "volume");
+	if (!volumeDescriptor || !volumeDescriptor.set) return;
+
+	let context = null;
+	const sources = new WeakMap(); // element -> MediaElementAudioSourceNode
+	const gains = new WeakMap(); // element -> GainNode（仅在播放期间保留）
+	const desiredVolumes = new WeakMap(); // element -> 游戏设定的音量
+	const debug = {
+		state: "idle",
+		routed: 0,
+		failed: 0,
+		/** 调试用：读取某个元素当前的 Web Audio 增益 */
+		gainOf(element) {
+			return gains.get(element)?.gain.value ?? null;
+		},
+	};
+	window.__nonameAudio = debug;
+
+	function ensureContext() {
+		if (context) return context;
+		try {
+			context = new AudioContextClass();
+			debug.state = context.state;
+			context.addEventListener?.("statechange", () => {
+				debug.state = context.state;
+			});
+		} catch (error) {
+			debug.failed++;
+			console.warn("iOS: 无法创建 AudioContext", error);
+		}
+		return context;
+	}
+
+	function resumeContext() {
+		const ctx = ensureContext();
+		if (!ctx) return null;
+		if (ctx.state !== "running") {
+			ctx.resume().then(() => (debug.state = ctx.state)).catch(() => {});
+		}
+		return ctx;
+	}
+
+	function clampVolume(value) {
+		const number = Number(value);
+		if (!Number.isFinite(number)) return 1;
+		return Math.min(1, Math.max(0, number));
+	}
+
+	function volumeOf(element) {
+		return clampVolume(desiredVolumes.get(element) ?? volumeDescriptor.get.call(element));
+	}
+
+	/** 把元素接进音频图；context 还没 running 时先不接，避免直接没声音。 */
+	function route(element) {
+		const ctx = ensureContext();
+		if (!ctx || ctx.state !== "running") return null;
+
+		let source = sources.get(element);
+		if (!source) {
+			try {
+				source = ctx.createMediaElementSource(element);
+				sources.set(element, source);
+			} catch (error) {
+				debug.failed++;
+				console.warn("iOS: 接管媒体音量失败", error);
+				return null;
+			}
+			element.addEventListener(
+				"ended",
+				() => {
+					const gain = gains.get(element);
+					if (!gain) return;
+					try {
+						gain.disconnect();
+					} catch {}
+					gains.delete(element);
+				},
+				{ once: false }
+			);
+		}
+
+		let gain = gains.get(element);
+		if (!gain) {
+			gain = ctx.createGain();
+			gain.connect(ctx.destination);
+			source.connect(gain);
+			gains.set(element, gain);
+			debug.routed++;
+		}
+		gain.gain.value = volumeOf(element);
+		return gain;
+	}
+
+	// 游戏通过 `audio.volume = x` 设置音量；这里同步到 GainNode
+	Object.defineProperty(proto, "volume", {
+		configurable: true,
+		enumerable: volumeDescriptor.enumerable,
+		get() {
+			return volumeDescriptor.get.call(this);
+		},
+		set(value) {
+			volumeDescriptor.set.call(this, value);
+			desiredVolumes.set(this, value);
+			const gain = gains.get(this);
+			if (gain) gain.gain.value = clampVolume(value);
+		},
+	});
+
+	// iOS 上 AudioContext 必须在用户手势里 resume
+	function unlock() {
+		const ctx = resumeContext();
+		if (!ctx) return;
+		const attachPlaying = () => {
+			if (ctx.state !== "running") return;
+			document.querySelectorAll("audio, video").forEach(element => {
+				if (!element.paused) route(element);
+			});
+		};
+		if (ctx.state === "running") attachPlaying();
+		else ctx.resume().then(attachPlaying).catch(() => {});
+	}
+
+	["touchstart", "touchend", "click", "keydown"].forEach(type => {
+		document.addEventListener(type, unlock, { passive: true, capture: true });
+	});
+
+	// 每次开始播放时挂上（覆盖新建的音效元素、以及换曲后的 BGM）
+	document.addEventListener(
+		"play",
+		event => {
+			const element = event.target;
+			if (element instanceof HTMLMediaElement) route(element);
+		},
+		true
+	);
+
+	// 从后台回来时 context 可能被挂起
+	document.addEventListener("visibilitychange", () => {
+		if (document.visibilityState === "visible" && context) resumeContext();
+	});
+}
+
+installIosAudioVolume();
+
 function postToNative(action, payload = {}) {
 	try {
 		window.webkit?.messageHandlers?.noname?.postMessage({ action, ...payload });
