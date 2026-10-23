@@ -1,0 +1,13 @@
+{
+  "name": "@noname/ios",
+  "version": "1.0.0",
+  "description": "Noname iOS client (WKWebView + local HTTP server)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build:ios": "tsx scripts/buildIos.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

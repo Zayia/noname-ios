@@ -1,0 +1,235 @@
+name: Build iOS (unsigned IPA)
+
+# 自动构建：每天检查一次官方仓库，有新提交就重新打包，产物发布到 Releases。
+#
+# 工作方式：
+#   1. 用本仓库里的 apps/ios（iOS 客户端壳）作为「补丁」；
+#   2. 构建前拉取官方 libnoname/noname 的代码覆盖工作区（apps/ios 保留）；
+#   3. 构建、打包，把未签名 IPA 发到 Release，标签形如 ios-<官方提交>-<iOS客户端提交>-<变体>。
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "资源裁剪方式"
+        required: false
+        default: full
+        type: choice
+        options:
+          - full
+          - no-audio
+          - core
+      force:
+        description: "即使这个版本已经构建过也重新构建"
+        required: false
+        default: false
+        type: boolean
+      upstream_ref:
+        description: "官方分支 / 标签 / 提交（默认 main）"
+        required: false
+        default: main
+        type: string
+  schedule:
+    # GitHub 的 cron 是 UTC；18:30 UTC = 北京时间 02:30
+    - cron: "30 18 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "apps/ios/**"
+      - ".github/workflows/ios.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 先用便宜的 Linux 机器判断这个版本是否已经构建过，避免白跑 macOS
+  check:
+    name: Check upstream & existing release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      skip: ${{ steps.meta.outputs.skip }}
+      variant: ${{ steps.meta.outputs.variant }}
+      upstream: ${{ steps.meta.outputs.upstream }}
+      upstream_short: ${{ steps.meta.outputs.upstream_short }}
+      ios: ${{ steps.meta.outputs.ios }}
+      ios_short: ${{ steps.meta.outputs.ios_short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve upstream commit
+        id: upstream
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/libnoname/noname.git
+          git fetch --no-tags --depth=1 upstream "${UPSTREAM_REF:-main}"
+          echo "sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=8 FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tag and check existing release
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARIANT: ${{ inputs.variant || 'full' }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet "HEAD:apps/ios" >/dev/null; then
+            echo "::error::仓库里没有 apps/ios：请先提交 iOS 客户端源码（git add apps/ios && git commit）"
+            exit 1
+          fi
+
+          IOS_SHA="$(git rev-parse HEAD:apps/ios)"
+          TAG="ios-${{ steps.upstream.outputs.short }}-$(git rev-parse --short=8 "$IOS_SHA")-${VARIANT}"
+
+          SKIP=false
+          if [ "$FORCE" != "true" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            SKIP=true
+            echo "::notice::已经存在 $TAG，跳过构建（需要重建请勾选 force）"
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "skip=$SKIP"
+            echo "variant=$VARIANT"
+            echo "upstream=${{ steps.upstream.outputs.sha }}"
+            echo "upstream_short=${{ steps.upstream.outputs.short }}"
+            echo "ios=$IOS_SHA"
+            echo "ios_short=$(git rev-parse --short=8 "$IOS_SHA")"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ needs.check.outputs.variant }} IPA
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      NONAME_BUILD_CHANNEL: release
+      NONAME_BUILD_COMMIT: ${{ needs.check.outputs.upstream }}
+      VARIANT: ${{ needs.check.outputs.variant }}
+      TAG: ${{ needs.check.outputs.tag }}
+      UPSTREAM_SHORT: ${{ needs.check.outputs.upstream_short }}
+      IOS_SHORT: ${{ needs.check.outputs.ios_short }}
+      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+
+    steps:
+      - name: Checkout (iOS wrapper)
+        uses: actions/checkout@v6
+
+      - name: Overlay latest upstream source
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/libnoname/noname.git
+          git fetch --no-tags --depth=1 upstream "${UPSTREAM_REF:-main}"
+          # 用官方代码覆盖工作区；apps/ios 不在官方仓库里，会原样保留
+          git checkout FETCH_HEAD -- .
+          echo "官方代码: $UPSTREAM_SHORT / iOS 客户端: $IOS_SHORT"
+          # 后面不再需要 git 历史，删掉可释放约 1GB（macOS runner 只有 14GB 磁盘）
+          rm -rf .git
+          df -h /
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Install dependencies
+        # 官方 lockfile 里没有 apps/ios 这个 workspace 包，所以这里不能用 --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build web assets
+        run: pnpm build
+
+      - name: Build unsigned IPA
+        run: |
+          set -euo pipefail
+          ARGS="--skip-web-build --prune"
+          if [ "$VARIANT" = "no-audio" ]; then ARGS="$ARGS --no-audio"; fi
+          if [ "$VARIANT" = "core" ]; then ARGS="$ARGS --core"; fi
+          # 直接用根目录安装好的 tsx，避免 pnpm 的「运行前校验依赖」再触发安装
+          ./node_modules/.bin/tsx apps/ios/scripts/buildIos.ts $ARGS
+
+      - name: Collect artifacts
+        id: dist
+        run: |
+          set -euo pipefail
+          IPA="apps/ios/build/ipa/noname-unsigned.ipa"
+          test -f "$IPA"
+          SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
+          SIZE="$(du -h "$IPA" | awk '{print $1}')"
+          mv "$IPA" "noname-unsigned-${VARIANT}.ipa"
+          echo "$SHA  noname-unsigned-${VARIANT}.ipa" > SHA256SUMS.txt
+          {
+            echo "upstream=$UPSTREAM_SHORT"
+            echo "ios=$IOS_SHORT"
+            echo "variant=$VARIANT"
+            echo "sha256=$SHA"
+            echo "size=$SIZE"
+            echo "builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee BUILD.txt
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "noname-unsigned-${VARIANT}.ipa" \
+            "SHA256SUMS.txt" \
+            "BUILD.txt" \
+            --title "无名杀 iOS ${VARIANT} (${TAG})" \
+            --notes "官方代码: \`$UPSTREAM_SHORT\` / iOS 客户端: \`$IOS_SHORT\`
+
+          文件: \`noname-unsigned-${VARIANT}.ipa\`
+          大小: ${{ steps.dist.outputs.size }}
+          SHA256: \`${{ steps.dist.outputs.sha }}\`
+
+          这是**未签名** IPA，需要自己签名安装（Sideloadly / AltStore / 轻松签 / TrollStore）。
+          签名时保持 Bundle ID 不变可以覆盖安装、保留存档；免费 Apple ID 有效期 7 天。
+          详见仓库里的 \`apps/ios/README.md\`。"
+
+      - name: Prune old releases (keep 3 newest)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 每个包 1.1GB，只保留最近 3 个 Release，避免仓库存储无限增长
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '.[] | select(.tagName | startswith("ios-")) | .tagName' \
+            | tail -n +4 \
+            | while read -r old; do
+                echo "删除旧 Release: $old"
+                gh release delete "$old" --yes --cleanup-tag || true
+              done
+
+      - name: Summary
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| Release | \`$TAG\` |"
+            echo "| 变体 | \`$VARIANT\` |"
+            echo "| 大小 | ${{ steps.dist.outputs.size }} |"
+            echo "| SHA256 | \`${{ steps.dist.outputs.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,41 @@
+name: Noname
+options:
+  bundleIdPrefix: com.libnoname
+  deploymentTarget:
+    iOS: "16.4"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.4"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  Noname:
+    type: application
+    platform: iOS
+    sources:
+      - path: Noname
+        excludes:
+          - "Info.plist"
+      # 游戏 Web 资源：以「文件夹引用」的方式整体拷进 App 包（Bundle/web）
+      - path: web
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: Noname
+        PRODUCT_BUNDLE_IDENTIFIER: com.libnoname.noname
+        INFOPLIST_FILE: Noname/Info.plist
+        MARKETING_VERSION: "1.11.7"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        SUPPORTS_MACCATALYST: "NO"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+    scheme:
+      gatherCoverageData: false

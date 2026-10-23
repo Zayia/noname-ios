@@ -1,0 +1,7 @@
+# 构建时由 scripts/buildIos.ts 生成
+web/*
+!web/.gitkeep
+build/
+Noname.xcodeproj/project.xcworkspace/
+Noname.xcodeproj/xcuserdata/
+*.ipa
