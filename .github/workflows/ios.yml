@@ -117,6 +117,8 @@ jobs:
       NONAME_BUILD_COMMIT: ${{ needs.check.outputs.upstream }}
       VARIANT: ${{ needs.check.outputs.variant }}
       TAG: ${{ needs.check.outputs.tag }}
+      # 构建时删掉了 .git，gh 无法自己推断仓库，必须显式给出
+      GH_REPO: ${{ github.repository }}
       UPSTREAM_SHORT: ${{ needs.check.outputs.upstream_short }}
       IOS_SHORT: ${{ needs.check.outputs.ios_short }}
       UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
