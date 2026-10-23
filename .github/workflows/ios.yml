@@ -91,7 +91,8 @@ jobs:
           TAG="ios-${{ steps.upstream.outputs.short }}-$(git rev-parse --short=8 "$IOS_SHA")-${VARIANT}"
 
           SKIP=false
-          if [ "$FORCE" != "true" ] && gh release view "$TAG" >/dev/null 2>&1; then
+          # 用 API 显式指定仓库，避免 gh 在 CI 里推断仓库失败
+          if [ "$FORCE" != "true" ] && gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
             SKIP=true
             echo "::notice::已经存在 $TAG，跳过构建（需要重建请勾选 force）"
           fi
