@@ -13,20 +13,25 @@
 import browserReady from "./noname/init/browser.js";
 
 /**
- * iOS 的音量补丁。
+ * iOS 的音量 / 播放补丁。
  *
- * WebKit 在 iOS 上会忽略 `HTMLMediaElement.volume`（属性可以写，但读取会被重置成 1，
- * 实际输出也不受它控制，音量只能靠机身按键）。后果就是游戏里的
- * 「音乐音量 / 音效音量」在 iPhone 上完全没反应。
+ * 两个 iOS 特有的问题：
  *
- * 做法：把每个 <audio>/<video> 接进 Web Audio 的 GainNode，用 gain 真正控制音量；
- * 元素自己的 volume 继续保留（游戏逻辑会读它）。
+ * 1. WebKit 会忽略 `HTMLMediaElement.volume`（读回来永远是 1，输出也不受控），
+ *    游戏的「音乐音量 / 音效音量」因此完全失效；
+ * 2. `createMediaElementSource` 接管后的媒体元素，开头 0.3~0.6 秒会被吞掉
+ *    （媒体时钟在走，音频图里却是静音），「过河拆桥」只听见「拆桥」就是这么来的。
+ *
+ * 对策：
+ *   - 长音频（BGM、视频）：走 MediaElementSource + GainNode，开头损失可以接受；
+ *   - 短音效（台词、技能音）：用 `decodeAudioData` 解码成 AudioBuffer，
+ *     原生元素静音播放只用来产生 play/ended 等事件，声音由 AudioBufferSourceNode
+ *     从头播放——既没有开头损失，也能精确控制音量。
  *
  * 注意：
- *   1. iOS 的 AudioContext 要等用户第一次触摸才能 resume，所以在 resume 之前不接管，
- *      否则接进还没运行的音频图会直接没声音；
- *   2. 同一个元素只能 createMediaElementSource 一次，所以 source 缓存起来复用；
- *   3. 播放结束后断开 gain，避免长时间游戏积累一堆音频节点。
+ *   - iOS 的 AudioContext 要等用户第一次触摸才能 resume；在那之前不接管，避免没声音；
+ *   - 同一个元素只能 createMediaElementSource 一次，source 需要缓存复用；
+ *   - 播放结束断开节点，避免长时间游戏积累音频节点。
  */
 function installIosAudioVolume() {
 	if (window.__nonameAudioVolumeInstalled) return;
@@ -39,17 +44,51 @@ function installIosAudioVolume() {
 	const volumeDescriptor = Object.getOwnPropertyDescriptor(proto, "volume");
 	if (!volumeDescriptor || !volumeDescriptor.set) return;
 
+	/** 超过这个时长的音频走 MediaElementSource，否则解码成 buffer 播放 */
+	const SHORT_AUDIO_SECONDS = 60;
+
 	let context = null;
-	const sources = new WeakMap(); // element -> MediaElementAudioSourceNode
-	const gains = new WeakMap(); // element -> GainNode（仅在播放期间保留）
+	let keepAlive = null;
+
+	const mediaSources = new WeakMap(); // element -> MediaElementAudioSourceNode
+	const mediaGains = new WeakMap(); // element -> GainNode
+	const shortPlaybacks = new WeakMap(); // element -> { source, gain }
 	const desiredVolumes = new WeakMap(); // element -> 游戏设定的音量
+	const analysers = new WeakMap(); // 调试用
+	const decodeCache = new Map(); // url -> Promise<AudioBuffer>
+	const undecodable = new Set(); // 解码失败的 URL，之后直接走原生播放
+
 	const debug = {
 		state: "idle",
 		routed: 0,
+		buffered: 0,
 		failed: 0,
-		/** 调试用：读取某个元素当前的 Web Audio 增益 */
+		/** 调试用：置 true 可临时关闭接管，对比原生行为 */
+		disabled: false,
+		/** 调试用：置 true 后新接管的音频会经过一个 AnalyserNode */
+		tap: false,
+		/** 调试用：读取元素当前的 Web Audio 增益 */
 		gainOf(element) {
-			return gains.get(element)?.gain.value ?? null;
+			return (mediaGains.get(element) ?? shortPlaybacks.get(element)?.gain)?.gain.value ?? null;
+		},
+		/** 调试用：读取元素的 AnalyserNode */
+		analyserOf(element) {
+			return analysers.get(element) ?? null;
+		},
+		/** 调试用：把元素改接到 AnalyserNode */
+		attachAnalyser(element) {
+			const gain = mediaGains.get(element);
+			const ctx = context;
+			if (!gain || !ctx) return null;
+			const analyser = ctx.createAnalyser();
+			analyser.fftSize = 2048;
+			try {
+				gain.disconnect();
+			} catch {}
+			gain.connect(analyser);
+			analyser.connect(ctx.destination);
+			analysers.set(element, analyser);
+			return analyser;
 		},
 	};
 	window.__nonameAudio = debug;
@@ -88,48 +127,173 @@ function installIosAudioVolume() {
 		return clampVolume(desiredVolumes.get(element) ?? volumeDescriptor.get.call(element));
 	}
 
-	/** 把元素接进音频图；context 还没 running 时先不接，避免直接没声音。 */
-	function route(element) {
+	/** 常驻一个循环的静音源，让音频图一直处于渲染状态 */
+	function keepGraphAlive(ctx) {
+		if (keepAlive) return;
+		try {
+			const buffer = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate)), ctx.sampleRate);
+			const source = ctx.createBufferSource();
+			source.buffer = buffer;
+			source.loop = true;
+			source.connect(ctx.destination);
+			source.start(0);
+			keepAlive = source;
+		} catch {}
+	}
+
+	// MARK: - 长音频：MediaElementSource + GainNode
+
+	function routeMedia(element) {
+		if (debug.disabled) return null;
 		const ctx = ensureContext();
 		if (!ctx || ctx.state !== "running") return null;
 
-		let source = sources.get(element);
+		let source = mediaSources.get(element);
 		if (!source) {
 			try {
 				source = ctx.createMediaElementSource(element);
-				sources.set(element, source);
+				mediaSources.set(element, source);
 			} catch (error) {
 				debug.failed++;
 				console.warn("iOS: 接管媒体音量失败", error);
 				return null;
 			}
-			element.addEventListener(
-				"ended",
-				() => {
-					const gain = gains.get(element);
-					if (!gain) return;
-					try {
-						gain.disconnect();
-					} catch {}
-					gains.delete(element);
-				},
-				{ once: false }
-			);
+			element.addEventListener("ended", () => {
+				const gain = mediaGains.get(element);
+				if (!gain) return;
+				try {
+					gain.disconnect();
+				} catch {}
+				mediaGains.delete(element);
+			});
 		}
 
-		let gain = gains.get(element);
+		let gain = mediaGains.get(element);
 		if (!gain) {
 			gain = ctx.createGain();
-			gain.connect(ctx.destination);
+			if (debug.tap) {
+				const analyser = ctx.createAnalyser();
+				analyser.fftSize = 2048;
+				gain.connect(analyser);
+				analyser.connect(ctx.destination);
+				analysers.set(element, analyser);
+			} else {
+				gain.connect(ctx.destination);
+			}
 			source.connect(gain);
-			gains.set(element, gain);
+			mediaGains.set(element, gain);
 			debug.routed++;
 		}
 		gain.gain.value = volumeOf(element);
 		return gain;
 	}
 
-	// 游戏通过 `audio.volume = x` 设置音量；这里同步到 GainNode
+	// MARK: - 短音频：解码成 AudioBuffer 播放
+
+	function decodeAudio(url) {
+		if (!url) return Promise.reject(new Error("no url"));
+		const cached = decodeCache.get(url);
+		if (cached) return cached;
+		const ctx = ensureContext();
+		if (!ctx) return Promise.reject(new Error("no context"));
+		const promise = fetch(url)
+			.then(response => {
+				if (!response.ok) throw new Error(`HTTP ${response.status}`);
+				return response.arrayBuffer();
+			})
+			.then(data => ctx.decodeAudioData(data))
+			.catch(error => {
+				undecodable.add(url);
+				decodeCache.delete(url);
+				throw error;
+			});
+		decodeCache.set(url, promise);
+		// 简单限制缓存数量，避免玩久了占用过多内存
+		if (decodeCache.size > 120) {
+			const oldest = decodeCache.keys().next().value;
+			if (oldest !== url) decodeCache.delete(oldest);
+		}
+		return promise;
+	}
+
+	function stopShortPlayback(element) {
+		const playback = shortPlaybacks.get(element);
+		if (!playback) return;
+		shortPlaybacks.delete(element);
+		try {
+			playback.source.stop();
+		} catch {}
+		try {
+			playback.source.disconnect();
+		} catch {}
+		try {
+			playback.gain.disconnect();
+		} catch {}
+	}
+
+	/**
+	 * 短音频播放：元素自身静音（保证 play/ended 事件照常触发），
+	 * 实际声音由 AudioBufferSourceNode 从头播放。
+	 *
+	 * 只有「解码已经完成」的文件才走这条路；解码失败的（少数低码率 mp3）
+	 * 直接原生播放——至少声音完整，只是音量滑块对它无效。
+	 */
+	function playShort(element, nativePlay, args) {
+		const ctx = ensureContext();
+		const url = element.currentSrc || element.src;
+		const cached = ctx && ctx.state === "running" && !debug.disabled && !undecodable.has(url) ? decodeCache.get(url) : null;
+
+		if (!cached) {
+			// 没预热过：先解码，这次先用原生播放
+			if (ctx && ctx.state === "running" && !undecodable.has(url)) decodeAudio(url).catch(() => {});
+			return nativePlay.apply(element, args);
+		}
+
+		stopShortPlayback(element);
+		element.muted = true;
+		const result = nativePlay.apply(element, args);
+		const startedAt = element.currentTime;
+
+		cached
+			.then(buffer => {
+				// 解码期间可能已经播完 / 被暂停 / 换了 src
+				if (element.paused || element.ended) return;
+				if (shortPlaybacks.has(element)) return;
+				if ((element.currentSrc || element.src) !== url) return;
+
+				const source = ctx.createBufferSource();
+				source.buffer = buffer;
+				const gain = ctx.createGain();
+				gain.gain.value = volumeOf(element);
+				source.connect(gain);
+				if (debug.tap) {
+					const analyser = ctx.createAnalyser();
+					analyser.fftSize = 2048;
+					gain.connect(analyser);
+					analyser.connect(ctx.destination);
+					analysers.set(element, analyser);
+				} else {
+					gain.connect(ctx.destination);
+				}
+
+				// 正常情况下从 0 开始；如果解码拖了太久，就跟上元素进度，避免不同步
+				const offset = element.currentTime - startedAt > 0.25 ? element.currentTime : 0;
+				source.start(0, Math.min(offset, Math.max(0, buffer.duration - 0.02)));
+				shortPlaybacks.set(element, { source, gain });
+				debug.buffered++;
+			})
+			.catch(error => {
+				// 解码失败就退回原生播放（至少能听到声音，只是音量不可控）
+				debug.failed++;
+				element.muted = false;
+				console.warn("iOS: 音频解码失败", error);
+			});
+
+		return result;
+	}
+
+	// MARK: - 属性 / 方法接管
+
 	Object.defineProperty(proto, "volume", {
 		configurable: true,
 		enumerable: volumeDescriptor.enumerable,
@@ -139,35 +303,82 @@ function installIosAudioVolume() {
 		set(value) {
 			volumeDescriptor.set.call(this, value);
 			desiredVolumes.set(this, value);
-			const gain = gains.get(this);
-			if (gain) gain.gain.value = clampVolume(value);
+			const mediaGain = mediaGains.get(this);
+			if (mediaGain) {
+				mediaGain.gain.value = clampVolume(value);
+				return;
+			}
+			const playback = shortPlaybacks.get(this);
+			if (playback) playback.gain.gain.value = clampVolume(value);
+			// 游戏是「创建元素 → 设置音量 → 设置 src → 播放」，
+			// 长音频可以在这里就先接进音频图
+			if (context && context.state === "running" && this.duration > SHORT_AUDIO_SECONDS) routeMedia(this);
 		},
 	});
 
-	// iOS 上 AudioContext 必须在用户手势里 resume
-	function unlock() {
-		const ctx = resumeContext();
-		if (!ctx) return;
-		const attachPlaying = () => {
-			if (ctx.state !== "running") return;
-			document.querySelectorAll("audio, video").forEach(element => {
-				if (!element.paused) route(element);
-			});
+	const nativePlay = proto.play;
+	if (typeof nativePlay === "function") {
+		proto.play = function play(...args) {
+			// 只有短音频走 buffer；BGM / 视频继续走 MediaElementSource
+			const duration = this.duration;
+			if (this.tagName === "AUDIO" && Number.isFinite(duration) && duration > 0 && duration <= SHORT_AUDIO_SECONDS) {
+				return playShort(this, nativePlay, args);
+			}
+			try {
+				routeMedia(this);
+			} catch {}
+			return nativePlay.apply(this, args);
 		};
-		if (ctx.state === "running") attachPlaying();
-		else ctx.resume().then(attachPlaying).catch(() => {});
 	}
 
-	["touchstart", "touchend", "click", "keydown"].forEach(type => {
-		document.addEventListener(type, unlock, { passive: true, capture: true });
-	});
+	// 元数据就绪后预解码，首次播放也能立刻出声
+	document.addEventListener(
+		"loadedmetadata",
+		event => {
+			const element = event.target;
+			if (!(element instanceof HTMLAudioElement)) return;
+			if (!Number.isFinite(element.duration) || element.duration <= 0) return;
+			if (element.duration > SHORT_AUDIO_SECONDS) {
+				// 长音频（BGM）走 MediaElementSource
+				routeMedia(element);
+				return;
+			}
+			if (debug.disabled) return;
+			const url = element.currentSrc || element.src;
+			if (undecodable.has(url)) return;
+			decodeAudio(url).catch(() => {});
+		},
+		true
+	);
 
-	// 每次开始播放时挂上（覆盖新建的音效元素、以及换曲后的 BGM）
+	// 长音频开始播放时确保已经接进音频图（autoplay 不会经过 play() 补丁）
 	document.addEventListener(
 		"play",
 		event => {
 			const element = event.target;
-			if (element instanceof HTMLMediaElement) route(element);
+			if (!(element instanceof HTMLMediaElement)) return;
+			if (!Number.isFinite(element.duration) || element.duration > SHORT_AUDIO_SECONDS) routeMedia(element);
+		},
+		true
+	);
+
+	// 暂停 / 换源时停掉 buffer，避免残留声音
+	["pause", "emptied", "abort"].forEach(type => {
+		document.addEventListener(
+			type,
+			event => {
+				const element = event.target;
+				if (element instanceof HTMLMediaElement) stopShortPlayback(element);
+			},
+			true
+		);
+	});
+
+	document.addEventListener(
+		"ended",
+		event => {
+			const element = event.target;
+			if (element instanceof HTMLMediaElement) stopShortPlayback(element);
 		},
 		true
 	);
@@ -175,6 +386,32 @@ function installIosAudioVolume() {
 	// 从后台回来时 context 可能被挂起
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "visible" && context) resumeContext();
+	});
+
+	// MARK: - 解锁
+
+	function unlock() {
+		const ctx = resumeContext();
+		if (!ctx) return;
+		const attachPlaying = () => {
+			if (ctx.state !== "running") return;
+			keepGraphAlive(ctx);
+			document.querySelectorAll("audio, video").forEach(element => {
+				if (!element.paused && element.duration > SHORT_AUDIO_SECONDS) routeMedia(element);
+			});
+		};
+		if (ctx.state === "running") attachPlaying();
+		else
+			ctx.resume()
+				.then(() => {
+					keepGraphAlive(ctx);
+					attachPlaying();
+				})
+				.catch(() => {});
+	}
+
+	["touchstart", "touchend", "click", "keydown"].forEach(type => {
+		document.addEventListener(type, unlock, { passive: true, capture: true });
 	});
 }
 
