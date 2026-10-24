@@ -38,6 +38,9 @@
 curl -fsSL https://raw.githubusercontent.com/Zayia/noname-ios/main/docs/server/deploy.sh | sudo bash
 ```
 
+> ⚠️ 这条命令会把 `main` 上的脚本直接以 root 执行。生产环境建议先把脚本下载下来看一眼，
+> 或者把 URL 里的 `main` 换成某个 commit，避免脚本被改动后无感知地执行。
+
 或者下载下来改参数再跑：
 
 ```bash
@@ -109,9 +112,10 @@ pnpm install --config.strict-dep-builds=false
 ./node_modules/.bin/tsup
 ```
 
-> ⚠️ **不能用 `pnpm build`**。pnpm 11 在执行脚本前会做一次依赖状态校验，
-> 那个校验内部又跑 `pnpm install`，于是再次撞上 esbuild 的 build script 检查而失败。
-> 直接调用 `tsup` 绕过它。产物是 `dist/cli.js`（11 KB，ESM + CJS 双格式）。
+> ⚠️ 有些 pnpm 11 环境里 `pnpm build` 会失败：它在执行脚本前会再做一次依赖状态校验，
+> 校验内部又跑 `pnpm install`，于是再次撞上 esbuild 的 build script 检查。
+> 遇到这种情况就直接调 `./node_modules/.bin/tsup` 绕过；没报错的话 `pnpm build` 也能用。
+> 产物是 `dist/cli.js`（约 10 KB，ESM + CJS 双格式）。
 
 ### 3.4 瘦身
 
@@ -247,6 +251,15 @@ journalctl -u noname-srv -f        # 系统日志
 tail -f /var/log/noname-srv.log    # 服务日志
 ```
 
+### 卸载
+
+```bash
+systemctl disable --now noname-srv
+rm -f /etc/systemd/system/noname-srv.service /etc/logrotate.d/noname-srv
+systemctl daemon-reload
+rm -rf /root/docker/noname-srv /var/log/noname-srv.log
+```
+
 ### 升级到上游新版本
 
 改 `UPSTREAM_COMMIT` 重跑部署脚本：
@@ -261,6 +274,45 @@ sudo UPSTREAM_COMMIT=<新 commit> bash deploy.sh
 
 房间、客户端、聊天事件都放在内存里，`events` 数组会累积。
 **小圈子自用（十几人）完全没问题，不要指望扛几百人。**
+
+### 日志轮转
+
+服务用 `StandardOutput=append:` 直接写 `${LOG_FILE}`，文件会一直增长。
+部署脚本会在 `/etc/logrotate.d/noname-srv` 里装一份轮转配置（每周切分、保留 4 份、压缩）：
+
+```
+/var/log/noname-srv.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+改了 `LOG_FILE` 的话重跑一次部署脚本即可更新。也可以把 unit 里的
+`StandardOutput` 改成 `journal`，交给 journald 管理（`journalctl -u noname-srv`）。
+
+### 安全（重要）
+
+这个中继**没有账号体系**：只有房间 key，知道地址的人都能连上来建房、聊天、拉房间列表；
+`ws://` 还是明文传输。公网暴露前至少想清楚这几点：
+
+- **不要公开宣传地址**，端口只开给熟人：云安全组白名单 / `ufw allow from <你的网段> to any port 8091`；
+- 如果必须完全公开，前面套一层反向代理做限流（nginx `limit_req`），或用 fail2ban 封异常 IP；
+- 服务端有 `ban` / 关键词封禁，但那是玩家层面的，不是访问控制；
+- 聊天内容明文转发，别发敏感信息；
+- 进程默认以 root 运行。介意的话可以改 unit：
+
+  ```ini
+  [Service]
+  User=noname
+  Group=noname
+  # INSTALL_DIR 要在 /root 之外，例如 /opt/noname-srv，并 chown -R noname:noname
+  ```
+
+  服务本身只需要读安装目录、写标准输出，没有别的权限需求。
 
 ---
 

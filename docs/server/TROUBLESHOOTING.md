@@ -40,11 +40,12 @@
 
 关键点是 **`NSAllowsArbitraryLoadsInWebContent`**：
 
-- WebSocket 是从 WKWebView 里的 JS 发起的，属于 **web content**
-- `NSAllowsArbitraryLoads` 管的是 App 自己的 `URLSession`，**管不到 WKWebView 里的内容**
-- **iOS 10 起，只要出现 `...InWebContent` 这类细分键，`NSAllowsArbitraryLoads` 就会被忽略**
-
-所以只写 `NSAllowsArbitraryLoads` 是不够的，真正起作用的是 `...InWebContent`。
+- WebSocket / fetch / 图片都是从 WKWebView 里的 JS 发起的，属于 **web content**，由这个键放行；
+- `NSAllowsArbitraryLoads` 本身也能放宽所有加载，但 **iOS 10 起，只要同时出现
+  `NSAllowsLocalNetworking`、`...InWebContent` 这类细分键，它就会被忽略**；
+- 原来的 plist 里有 `NSAllowsLocalNetworking`，所以只补一个 `NSAllowsArbitraryLoads`
+  **不会生效**，必须加 `...InWebContent`（或者删掉细分键、只留 `NSAllowsArbitraryLoads`，
+  但那样 App 自己的网络请求也会一并放开，范围更大）。
 
 > **装的是旧包也会出现同样现象。** 改完 `Info.plist` 必须重新构建 IPA 并覆盖安装，
 > 用旧 IPA 测永远是失败的。
@@ -183,14 +184,16 @@ onlyBuiltDependencies:
 
 **现象**：`pnpm build` 报依赖状态校验失败
 
-**原因**：pnpm 11 在执行 `package.json` 的 scripts 前会做一次依赖状态校验，
-那个校验内部又调 `pnpm install`，于是再次撞上 esbuild 的 build script 检查。
+**原因**：部分 pnpm 11 环境会在执行 `package.json` 的 scripts 前再做一次依赖状态校验，
+校验内部又调 `pnpm install`，于是再次撞上 esbuild 的 build script 检查。
 
 **解决**：绕过 pnpm 的脚本包装，直接调二进制：
 
 ```bash
 ./node_modules/.bin/tsup
 ```
+
+如果 `pnpm build` 能正常跑完，就不用管这条。
 
 ---
 

@@ -12,6 +12,15 @@ Restart=always
 RestartSec=3
 # 联机中继只转发信令，内存占用很小；上限只是兜底，防止异常时吃满内存
 MemoryMax=512M
+# 基础加固：不提权、不写系统目录、独立 /tmp
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 StandardOutput=append:__LOG_FILE__
 StandardError=append:__LOG_FILE__
 

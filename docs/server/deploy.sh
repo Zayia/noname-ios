@@ -8,6 +8,8 @@
 #
 #   sudo PORT=9000 INSTALL_DIR=/opt/noname-srv ./deploy.sh
 #
+# 提示：生产环境建议先把脚本下载下来看一眼，再 sudo bash deploy.sh 执行。
+#
 # 设计说明：
 #   * 只从上游取 packages/server 这一个包的 7 个源文件，不克隆 2.5 GB 仓库；
 #   * 上游代码按 GPL-3.0 分发，本脚本在部署时才拉取，本仓库不复制其源码；
@@ -123,6 +125,14 @@ ExecStart=${NODE_BIN} dist/cli.js --port ${PORT}
 Restart=always
 RestartSec=3
 MemoryMax=512M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 StandardOutput=append:${LOG_FILE}
 StandardError=append:${LOG_FILE}
 
@@ -141,12 +151,34 @@ systemctl is-active --quiet "${SERVICE_NAME}" \
 
 ok "服务已启动"
 
+# ── 5.5 日志轮转 ──────────────────────────────────────────────────────────────
+# 服务直接 append 写日志文件，不轮转会一直涨
+if [ -d /etc/logrotate.d ]; then
+  cat > "/etc/logrotate.d/${SERVICE_NAME}" <<EOF
+${LOG_FILE} {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+  ok "日志轮转：/etc/logrotate.d/${SERVICE_NAME}"
+fi
+
 # ── 6. 自检 ───────────────────────────────────────────────────────────────────
 info "自检"
 
-ss -tulpn 2>/dev/null | grep -q ":${PORT}\b" \
-  && ok "监听 :${PORT}" \
-  || die "端口 ${PORT} 没有监听"
+if command -v ss >/dev/null 2>&1; then
+  ss -tulpn 2>/dev/null | grep -q ":${PORT}\b" \
+    && ok "监听 :${PORT}" \
+    || die "端口 ${PORT} 没有监听"
+else
+  (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null \
+    && ok "监听 :${PORT}" \
+    || die "端口 ${PORT} 没有监听"
+fi
 
 # 用 ws 客户端真连一次，确认能拿到房间列表
 if ( cd "$INSTALL_DIR" && P="$PORT" node -e '
