@@ -421,6 +421,39 @@ Documents/Noname/
 **页面能开但资源 404？**
 `apps/ios/web/` 没同步，重新执行 `pnpm -F @noname/ios build:ios`（或手动 `rsync dist/ apps/ios/web/`）。
 
+**连不上自己搭的服务器（http:// 域名）？**
+
+iOS 的 ATS 默认禁止明文 HTTP。客户端的 `Info.plist` 里已经放开了 WKWebView 的明文加载：
+
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+    <key>NSAllowsArbitraryLoadsForMedia</key><true/>
+    <key>NSAllowsLocalNetworking</key><true/>
+</dict>
+```
+
+* `NSAllowsArbitraryLoadsInWebContent`：允许 WKWebView 里加载 `http://`（联机、扩展源、资源下载、图片、fetch）；
+* `NSAllowsArbitraryLoadsForMedia`：允许媒体走 `http://`；
+* `NSAllowsLocalNetworking`：内置的 `127.0.0.1` 服务。
+
+> 注意：**iOS 10 起，只要出现上面这些细分键，`NSAllowsArbitraryLoads` 就会被忽略**，
+> 所以没必要再写 `NSAllowsArbitraryLoads`——真正起作用的是 `...InWebContent`。
+
+如果只想放开自己的域名、其它仍然强制 HTTPS，可以把这几项换成 `NSExceptionDomains`：
+
+```xml
+<key>NSExceptionDomains</key>
+<dict>
+    <key>your.domain.com</key>
+    <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><true/>
+    </dict>
+</dict>
+```
+
 **签名时报 "Unable to install ... application-identifier"？**
 Bundle ID 和别人的冲突，换一个 `PRODUCT_BUNDLE_IDENTIFIER` 重新打包，或在签名工具里改 Bundle ID。
 

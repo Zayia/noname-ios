@@ -70,6 +70,17 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!--
+			游戏允许玩家自己填写服务器地址（联机、扩展源、资源下载），
+			这些地址经常是 http:// 的，所以要在 WKWebView 里放开明文 HTTP。
+			NSAllowsArbitraryLoadsInWebContent 只影响 WebView 里的加载，
+			不会放开 App 自身的 URLSession；iOS 10 起它会让 NSAllowsArbitraryLoads 失效。
+		-->
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsArbitraryLoadsForMedia</key>
+		<true/>
+		<!-- 本地 127.0.0.1 的内置 HTTP 服务 -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
