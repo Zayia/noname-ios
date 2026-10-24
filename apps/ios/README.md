@@ -392,13 +392,18 @@ Documents/Noname/
     从头播放——没有开头损失，音量也精确；
   * **BGM / 视频**：仍走 `MediaElementSource` + `GainNode`，换曲时开头会损失一点点，可以接受。
 
-  少数低码率 MP3（MPEG-2 Layer III，码率 ≤32kbps，例如 `audio/card/male/guohe.mp3`）
-  WebKit 的 `decodeAudioData` 会直接失败。构建脚本会在打包前用 macOS 自带的
-  `afconvert` 把它们转成 64kbps AAC——**文件名仍然是 `.mp3`**，本地服务按文件头
-  返回 `audio/mp4`，因此这些文件也能走 AudioBuffer 路径，音量同样可控。
-  转换约 1100 个文件、构建多花 1~2 分钟、包体增加约 10 MB；可以用 `--no-transcode` 关掉。
+  WebKit 的 `decodeAudioData` 对一部分 MP3 会直接失败（已知集中在 MPEG-2 Layer III
+  @32kbps，例如 `audio/card/male/guohe.mp3`）。构建脚本会在打包前用 macOS 自带的
+  `afconvert` 把**所有非 BGM 的 mp3** 转成 AAC——44.1k/48k 用 96kbps，低采样率用 64kbps，
+  保证解码全部成功。**文件名仍然是 `.mp3`**，本地服务按文件头返回 `audio/mp4`。
+  素材里还有少量「扩展名 .mp3、内容其实是 WAV / Ogg / ADTS」的文件，也会先按真实容器
+  换临时扩展名再转（Ogg 那 5 个文件 WebKit 本来就解不了，转完才可用）。
 
-  音频 URL 会自动带一个 `?v=aac1`，避免 WKWebView 的磁盘缓存继续返回旧的 mp3 字节。
+  - BGM（`audio/background/`）不转：它们是长音频，走 `MediaElementSource`，音量本来就可控；
+  - 约 7600 个文件，构建多花 3~5 分钟；体积通常还会略小（高码率重编码后变小）；
+  - 可以用 `--no-transcode` 关掉。
+
+  音频 URL 会自动带一个 `?v=aac2`，避免 WKWebView 的磁盘缓存继续返回旧字节。
 
   需要用户先触摸一次屏幕（iOS 要求 AudioContext 在用户手势里 resume）；
   调试时可以看 `window.__nonameAudio.state` 是否为 `running`。

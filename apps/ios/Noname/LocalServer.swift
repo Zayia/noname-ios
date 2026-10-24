@@ -294,11 +294,24 @@ final class LocalServer {
 		return HTTPResponse(status: 200, headers: headers, body: data)
 	}
 
-	/// 构建脚本会把 WebKit 解不了的低码率 mp3 转成 AAC（文件名仍是 .mp3），
-	/// 这里按文件头识别 MP4 容器，返回 audio/mp4，否则浏览器会按 audio/mpeg 解错。
+	/// 构建脚本会把非 BGM 的音频统一转成 AAC（文件名仍是 .mp3），
+	/// 素材里也有扩展名是 .mp3、内容其实是 WAV/Ogg 的文件。
+	/// 这里按文件头返回正确的 MIME，否则浏览器会按 audio/mpeg 解错。
 	private func contentType(for url: URL, data: Data) -> String {
-		if url.pathExtension.lowercased() == "mp3", data.count >= 12, data.subdata(in: 4..<8) == Data("ftyp".utf8) {
+		guard url.pathExtension.lowercased() == "mp3", data.count >= 12 else {
+			return MimeType.of(path: url.path)
+		}
+		if data.subdata(in: 4..<8) == Data("ftyp".utf8) {
 			return "audio/mp4"
+		}
+		if data.subdata(in: 0..<4) == Data("RIFF".utf8), data.subdata(in: 8..<12) == Data("WAVE".utf8) {
+			return "audio/wav"
+		}
+		if data.subdata(in: 0..<4) == Data("OggS".utf8) {
+			return "audio/ogg"
+		}
+		if data[0] == 0xff, (data[1] & 0xf6) == 0xf0 {
+			return "audio/aac" // ADTS
 		}
 		return MimeType.of(path: url.path)
 	}

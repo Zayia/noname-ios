@@ -323,7 +323,7 @@ function installIosAudioVolume() {
 	 * 老用户可能还缓存着旧的 mp3 字节（Cache-Control 之前是 7 天），
 	 * 换了内容也拿不到新文件。加一个固定的 `?v=` 让 URL 变化，强制重新取一次。
 	 */
-	const AUDIO_CACHE_VERSION = "aac1";
+	const AUDIO_CACHE_VERSION = "aac2";
 	function versionedAudioUrl(url) {
 		if (!url || typeof url !== "string") return url;
 		// blob:/data: 不处理；其余（绝对 URL、"/audio/..."、以及 lib.assetURL 为空时的
@@ -362,6 +362,22 @@ function installIosAudioVolume() {
 			return nativePlay.apply(this, args);
 		};
 	}
+
+	// 资源一开始加载就预解码（比 loadedmetadata 更早），尽量保证第一次播放时
+	// buffer 已经就绪，否则第一次播放只能走原生、音量不受控
+	document.addEventListener(
+		"loadstart",
+		event => {
+			const element = event.target;
+			if (!(element instanceof HTMLAudioElement)) return;
+			if (debug.disabled) return;
+			const url = element.currentSrc || element.src;
+			if (!url || /\/audio\/background\//.test(url)) return;
+			if (undecodable.has(url)) return;
+			decodeAudio(url).catch(() => {});
+		},
+		true
+	);
 
 	// 元数据就绪后预解码，首次播放也能立刻出声
 	document.addEventListener(
