@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { transcodeAudio } from "./transcodeAudio";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -37,6 +38,7 @@ if (args.has("--help")) {
   --core             只保留核心资源，剔除 audio/ 与 image/（体积最小，需要联网下载资源）
   --debug            构建 Debug 配置
   --prune            构建后删除 dist/ 与 Payload/ 等中间产物（CI 节省磁盘用）
+  --no-transcode     跳过「mp3 → AAC」转码（调试用）
   --help             显示帮助
 `);
 	process.exit(0);
@@ -54,6 +56,21 @@ if (skipWebBuild) {
 
 console.log("==> 2/5 准备 App 内置资源目录");
 stageWebAssets();
+
+// 把 WebKit 解不了的低码率 mp3 转成 AAC，让它们也能走 AudioBuffer 路径
+if (!args.has("--no-transcode")) {
+	const started = Date.now();
+	const result = transcodeAudio(join(webDir, "audio"));
+	if (result.converted || result.failed) {
+		const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+		console.log(
+			`    音频转码: ${result.converted} 个 → AAC，失败 ${result.failed} 个，` +
+				`${mb(result.bytesBefore)} → ${mb(result.bytesAfter)}，耗时 ${((Date.now() - started) / 1000).toFixed(0)}s`
+		);
+	} else {
+		console.log("    音频转码: 无需转码");
+	}
+}
 
 if (prune) {
 	// 资源已经拷进 apps/ios/web/，dist/ 就不再需要了

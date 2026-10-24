@@ -101,7 +101,9 @@ struct HTTPResponse {
 	func serialize() -> Data {
 		var head = "HTTP/1.1 \(status) \(HTTPResponse.reasonPhrases[status] ?? "OK")\r\n"
 		var allHeaders = headers
-		allHeaders["Content-Length"] = String(body.count)
+		if allHeaders["Content-Length"] == nil {
+			allHeaders["Content-Length"] = String(body.count)
+		}
 		allHeaders["Connection"] = allHeaders["Connection"] ?? "keep-alive"
 		for (name, value) in allHeaders {
 			head += "\(name): \(value)\r\n"

@@ -110,6 +110,7 @@ apps/ios/build/ipa/noname-unsigned.ipa
 | `--core` | 再剔除 `image/`，IPA 最小，但卡牌/立绘会缺图 |
 | `--debug` | 构建 Debug 配置（含调试接口） |
 | `--prune` | 构建完删除 `dist/`、`Payload/`，CI 省磁盘用 |
+| `--no-transcode` | 跳过「低码率 mp3 → AAC」转码（调试用） |
 
 ### iOS 27 / Xcode 27：必须使用 UIScene 生命周期
 
@@ -391,8 +392,14 @@ Documents/Noname/
     从头播放——没有开头损失，音量也精确；
   * **BGM / 视频**：仍走 `MediaElementSource` + `GainNode`，换曲时开头会损失一点点，可以接受。
 
-  少数低码率 mp3（约 8%，例如 `audio/card/male/guohe.mp3`）WebKit 解码失败，
-  会自动退回原生播放：声音完整，但音量滑块对这类文件无效。
+  少数低码率 MP3（MPEG-2 Layer III，码率 ≤32kbps，例如 `audio/card/male/guohe.mp3`）
+  WebKit 的 `decodeAudioData` 会直接失败。构建脚本会在打包前用 macOS 自带的
+  `afconvert` 把它们转成 64kbps AAC——**文件名仍然是 `.mp3`**，本地服务按文件头
+  返回 `audio/mp4`，因此这些文件也能走 AudioBuffer 路径，音量同样可控。
+  转换约 1100 个文件、构建多花 1~2 分钟、包体增加约 10 MB；可以用 `--no-transcode` 关掉。
+
+  音频 URL 会自动带一个 `?v=aac1`，避免 WKWebView 的磁盘缓存继续返回旧的 mp3 字节。
+
   需要用户先触摸一次屏幕（iOS 要求 AudioContext 在用户手势里 resume）；
   调试时可以看 `window.__nonameAudio.state` 是否为 `running`。
 * **不支持 iOS < 16.4**：游戏要求 Safari 16.4 级别的 WebKit。

@@ -316,6 +316,38 @@ function installIosAudioVolume() {
 		},
 	});
 
+	/**
+	 * 给本地音频 URL 加一个版本号。
+	 *
+	 * 构建时会把部分 mp3 换成 AAC，但文件名不变；WKWebView 的磁盘缓存是按 URL 记的，
+	 * 老用户可能还缓存着旧的 mp3 字节（Cache-Control 之前是 7 天），
+	 * 换了内容也拿不到新文件。加一个固定的 `?v=` 让 URL 变化，强制重新取一次。
+	 */
+	const AUDIO_CACHE_VERSION = "aac1";
+	function versionedAudioUrl(url) {
+		if (!url || typeof url !== "string") return url;
+		// blob:/data: 不处理；其余（绝对 URL、"/audio/..."、以及 lib.assetURL 为空时的
+		// "audio/..." 相对路径）都补一个版本号
+		if (/^(?:blob|data|javascript):/i.test(url)) return url;
+		if (url.includes("v=")) return url;
+		if (!/\.(mp3|m4a|aac|ogg|wav)(\?|#|$)/i.test(url)) return url;
+		return `${url}${url.includes("?") ? "&" : "?"}v=${AUDIO_CACHE_VERSION}`;
+	}
+
+	const srcDescriptor = Object.getOwnPropertyDescriptor(proto, "src");
+	if (srcDescriptor?.set) {
+		Object.defineProperty(proto, "src", {
+			configurable: true,
+			enumerable: srcDescriptor.enumerable,
+			get() {
+				return srcDescriptor.get.call(this);
+			},
+			set(value) {
+				srcDescriptor.set.call(this, versionedAudioUrl(value));
+			},
+		});
+	}
+
 	const nativePlay = proto.play;
 	if (typeof nativePlay === "function") {
 		proto.play = function play(...args) {

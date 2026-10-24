@@ -272,8 +272,9 @@ final class LocalServer {
 			return .text("403 Forbidden", status: 403)
 		}
 
+		let contentType = contentType(for: fileURL, data: data)
 		var headers: [String: String] = [
-			"Content-Type": MimeType.of(path: fileURL.path),
+			"Content-Type": contentType,
 			"Accept-Ranges": "bytes",
 			"Cache-Control": cacheControl(for: fileURL.path),
 		]
@@ -282,17 +283,33 @@ final class LocalServer {
 		if let rangeHeader = request.headers["range"], let range = ByteRange.parse(rangeHeader, total: data.count) {
 			let slice = data.subdata(in: range.start..<range.end)
 			headers["Content-Range"] = "bytes \(range.start)-\(range.end - 1)/\(data.count)"
-			headers["Content-Type"] = MimeType.of(path: fileURL.path)
+			headers["Content-Type"] = contentType
 			return HTTPResponse(status: 206, headers: headers, body: request.method == "HEAD" ? Data() : slice)
 		}
 
-		return HTTPResponse(status: 200, headers: headers, body: request.method == "HEAD" ? Data() : data)
+		if request.method == "HEAD" {
+			headers["Content-Length"] = String(data.count)
+			return HTTPResponse(status: 200, headers: headers, body: Data())
+		}
+		return HTTPResponse(status: 200, headers: headers, body: data)
+	}
+
+	/// 构建脚本会把 WebKit 解不了的低码率 mp3 转成 AAC（文件名仍是 .mp3），
+	/// 这里按文件头识别 MP4 容器，返回 audio/mp4，否则浏览器会按 audio/mpeg 解错。
+	private func contentType(for url: URL, data: Data) -> String {
+		if url.pathExtension.lowercased() == "mp3", data.count >= 12, data.subdata(in: 4..<8) == Data("ftyp".utf8) {
+			return "audio/mp4"
+		}
+		return MimeType.of(path: url.path)
 	}
 
 	private func cacheControl(for path: String) -> String {
 		let ext = (path as NSString).pathExtension.lowercased()
 		switch ext {
-		case "png", "jpg", "jpeg", "gif", "webp", "mp3", "ogg", "wav", "m4a", "mp4", "webm", "woff", "woff2", "ttf", "otf":
+		// 音频/视频只做协商缓存：构建时可能会把 mp3 转成 AAC，长缓存会拿到旧字节
+		case "mp3", "ogg", "wav", "m4a", "mp4", "webm":
+			return "no-cache"
+		case "png", "jpg", "jpeg", "gif", "webp", "woff", "woff2", "ttf", "otf":
 			return "public, max-age=604800"
 		default:
 			return "no-cache"
