@@ -39,9 +39,27 @@ pnpm -F @noname/ios build:ios --skip-web-build
 # → apps/ios/build/ipa/noname-unsigned.ipa
 ```
 
+## 配套服务端（联机）
+
+《无名杀》联机需要一个 WebSocket 中继服务器。它在 [`docs/server/`](docs/server/) 里有完整的部署方案：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zayia/noname-ios/main/docs/server/deploy.sh | sudo bash
+```
+
+服务端**极小**——7 个源文件、一个 `ws` 依赖、最终占用约 **470 KB**，
+不需要武将立绘/语音/扩展，也不需要构建游戏前端。
+
+部署完在客户端联机地址填 `ws://<域名或公网IP>:<端口>`（**必须带端口**，否则客户端会补成 8080）。
+
+- [部署教程](docs/server/README.md)
+- [排障清单](docs/server/TROUBLESHOOTING.md)
+
 ## 文档
 
 架构、签名安装、扩展导入等技术细节见 [apps/ios/README.md](apps/ios/README.md)。
+
+服务端部署与排障见 [docs/server/](docs/server/)。
 
 ## 许可
 

@@ -1,0 +1,19 @@
+[Unit]
+Description=Noname (无名杀) WebSocket 联机中继服务
+Documentation=https://github.com/Zayia/noname-ios/tree/main/docs/server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__NODE_BIN__ dist/cli.js --port __PORT__
+Restart=always
+RestartSec=3
+# 联机中继只转发信令，内存占用很小；上限只是兜底，防止异常时吃满内存
+MemoryMax=512M
+StandardOutput=append:__LOG_FILE__
+StandardError=append:__LOG_FILE__
+
+[Install]
+WantedBy=multi-user.target
