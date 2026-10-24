@@ -82,6 +82,19 @@ console.log("==> 3/5 生成 Xcode 工程");
 ensureProject();
 
 console.log(`==> 4/5 编译 iOS App（${configuration}）`);
+
+// 让 App 的 CFBundleShortVersionString 跟着上游游戏版本走，
+// 不再依赖工程里写死的 MARKETING_VERSION（否则会出现「游戏 1.11.6 / App 1.11.7」）
+const gameVersion = (() => {
+	try {
+		const pkg = JSON.parse(readFileSync(resolve(workspaceRoot, "apps/core/package.json"), "utf8")) as { version?: string };
+		return typeof pkg.version === "string" && pkg.version.length ? pkg.version : null;
+	} catch {
+		return null;
+	}
+})();
+if (gameVersion) console.log(`    游戏版本: ${gameVersion}`);
+
 rmSync(derivedData, { recursive: true, force: true });
 run(
 	"xcodebuild",
@@ -102,6 +115,7 @@ run(
 		"EXPANDED_CODE_SIGN_IDENTITY=",
 		"DEVELOPMENT_TEAM=",
 		"ONLY_ACTIVE_ARCH=NO",
+		...(gameVersion ? [`MARKETING_VERSION=${gameVersion}`] : []),
 		"build",
 	],
 	iosRoot,

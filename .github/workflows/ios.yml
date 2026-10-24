@@ -4,7 +4,9 @@ name: Build iOS (unsigned IPA)
 #
 # 工作方式：
 #   1. 用本仓库里的 apps/ios（iOS 客户端壳）作为「补丁」；
-#   2. 构建前拉取官方 libnoname/noname 的代码覆盖工作区（apps/ios 保留）；
+#   2. 默认拉取官方**最新正式版标签**（latest），而不是 main 上的测试版——
+#      main 的版本号可能领先正式版，会导致联机时「禁止不同版本玩家进房」；
+#      构建前用官方代码覆盖工作区（apps/ios 保留）；
 #   3. 构建、打包，把未签名 IPA 发到 Release，标签形如 ios-<官方提交>-<iOS客户端提交>-<变体>。
 
 on:
@@ -25,9 +27,9 @@ on:
         default: false
         type: boolean
       upstream_ref:
-        description: "官方分支 / 标签 / 提交（默认 main）"
+        description: "官方版本：latest=最新正式版，也可填标签 / 分支 / 提交"
         required: false
-        default: main
+        default: latest
         type: string
   schedule:
     # GitHub 的 cron 是 UTC；18:30 UTC = 北京时间 02:30
@@ -57,6 +59,7 @@ jobs:
       variant: ${{ steps.meta.outputs.variant }}
       upstream: ${{ steps.meta.outputs.upstream }}
       upstream_short: ${{ steps.meta.outputs.upstream_short }}
+      ref: ${{ steps.upstream.outputs.ref }}
       ios: ${{ steps.meta.outputs.ios }}
       ios_short: ${{ steps.meta.outputs.ios_short }}
     steps:
@@ -66,13 +69,22 @@ jobs:
       - name: Resolve upstream commit
         id: upstream
         env:
-          UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'latest' }}
         run: |
           set -euo pipefail
+          REF="${UPSTREAM_REF:-latest}"
+          if [ "$REF" = "latest" ]; then
+            # 最新正式版标签。main 上往往是「暂未发布，仅供测试」的版本，
+            # 版本号比正式版大，联机时会因为版本不同被拒绝。
+            REF="$(gh api repos/libnoname/noname/releases/latest --jq .tag_name)"
+            echo "::notice::使用最新正式版: $REF"
+          fi
           git remote add upstream https://github.com/libnoname/noname.git
-          git fetch --no-tags --depth=1 upstream "${UPSTREAM_REF:-main}"
-          echo "sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
-          echo "short=$(git rev-parse --short=8 FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags --depth=1 upstream "$REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse FETCH_HEAD^{commit})" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=8 FETCH_HEAD^{commit})" >> "$GITHUB_OUTPUT"
 
       - name: Compute tag and check existing release
         id: meta
@@ -122,7 +134,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       UPSTREAM_SHORT: ${{ needs.check.outputs.upstream_short }}
       IOS_SHORT: ${{ needs.check.outputs.ios_short }}
-      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+      UPSTREAM_REF: ${{ needs.check.outputs.ref }}
 
     steps:
       - name: Checkout (iOS wrapper)
@@ -132,9 +144,9 @@ jobs:
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/libnoname/noname.git
-          git fetch --no-tags --depth=1 upstream "${UPSTREAM_REF:-main}"
+          git fetch --no-tags --depth=1 upstream "${UPSTREAM_REF:-latest}"
           # 用官方代码覆盖工作区；apps/ios 不在官方仓库里，会原样保留
-          git checkout FETCH_HEAD -- .
+          git checkout "FETCH_HEAD^{commit}" -- .
           echo "官方代码: $UPSTREAM_SHORT / iOS 客户端: $IOS_SHORT"
           # 后面不再需要 git 历史，删掉可释放约 1GB（macOS runner 只有 14GB 磁盘）
           rm -rf .git
@@ -159,6 +171,15 @@ jobs:
       - name: Build web assets
         run: pnpm build
 
+      - name: Resolve game version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./apps/core/package.json').version")"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "游戏版本: $VERSION"
+
       - name: Build unsigned IPA
         run: |
           set -euo pipefail
@@ -181,6 +202,7 @@ jobs:
           {
             echo "upstream=$UPSTREAM_SHORT"
             echo "ios=$IOS_SHORT"
+            echo "version=${{ steps.version.outputs.version }}"
             echo "variant=$VARIANT"
             echo "sha256=$SHA"
             echo "size=$SIZE"
@@ -198,8 +220,9 @@ jobs:
             "noname-unsigned-${VARIANT}.ipa" \
             "SHA256SUMS.txt" \
             "BUILD.txt" \
-            --title "无名杀 iOS ${VARIANT} (${TAG})" \
-            --notes "官方代码: \`$UPSTREAM_SHORT\` / iOS 客户端: \`$IOS_SHORT\`
+            --title "无名杀 iOS ${{ steps.version.outputs.version }} ${VARIANT} (${TAG})" \
+            --notes "游戏版本: ${{ steps.version.outputs.version }}
+          官方代码: \`$UPSTREAM_SHORT\` / iOS 客户端: \`$IOS_SHORT\`
 
           文件: \`noname-unsigned-${VARIANT}.ipa\`
           大小: ${{ steps.dist.outputs.size }}

@@ -160,7 +160,7 @@ ditto -c -k --sequesterRsrc --keepParent Payload noname-unsigned.ipa
 
 仓库里的 [`.github/workflows/ios.yml`](../../.github/workflows/ios.yml) 会：
 
-1. 每天 **北京时间 02:30** 拉取一次官方 `main`；
+1. 每天 **北京时间 02:30** 拉取一次官方**最新正式版标签**（latest，不是 `main`）；
 2. 用官方最新代码覆盖工作区，只保留本仓库里的 `apps/ios/`（iOS 客户端壳）；
 3. 构建 Web 产物 → 编译 App → 打包未签名 IPA；
 4. 发布到 **Releases**，标签形如 `ios-<官方提交>-<iOS客户端提交>-<变体>`；
@@ -212,7 +212,8 @@ git push -u origin main
 * 官方更新后什么都不用做，第二天早上 Release 里就会有新包；
 * 也可以在 Actions 页手动触发，支持：
   * `variant`：`full` / `no-audio` / `core`（体积从小到大）；
-  * `upstream_ref`：默认 `main`，也可以填官方 tag（例如 `v1.10.10`）来固定版本；
+  * `upstream_ref`：默认 `latest`（最新正式版标签）；也可以固定成某个 tag（例如 `v1.11.6`），
+    或填 `main` 构建测试版——注意测试版版本号通常比正式版大，**联机会被拒绝**；
   * `force`：这个组合构建过也强制重建。
 * 下载 Release 里的 `noname-unsigned-<变体>.ipa`，用 Sideloadly / AltStore / 轻松签 重签安装即可。
 

@@ -11,12 +11,14 @@
 
 ## 自动更新
 
-- 每天 **北京时间 02:30** 检查一次官方 [`libnoname/noname`](https://github.com/libnoname/noname) 的 `main`；
+- 每天 **北京时间 02:30** 检查一次官方 [`libnoname/noname`](https://github.com/libnoname/noname) 的**最新正式版标签**（latest）；
+  默认不跟 `main`——`main` 上常是「暂未发布，仅供测试」的版本，版本号比正式版大，
+  联机时会被「禁止不同版本玩家进房」拦住；
 - 有更新就自动构建并发布 Release，标签格式 `ios-<官方提交>-<iOS客户端提交>-<变体>`；
 - 同一组合已经构建过就跳过，不浪费构建时间；只保留最近 **3 个** Release；
 - 也可以手动触发：**Actions → Build iOS (unsigned IPA) → Run workflow**
   - `variant`：`full` / `no-audio` / `core`（体积从小到大）
-  - `upstream_ref`：官方分支 / 标签 / 提交（默认 `main`）
+  - `upstream_ref`：官方版本，默认 `latest`（最新正式版标签），也可填 `v1.11.6` 之类的标签或 `main` 测试版
   - `force`：同一版本强制重建
 
 ## 版本核对
