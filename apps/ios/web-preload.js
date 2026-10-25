@@ -235,73 +235,112 @@ function installIosAudioVolume() {
 	 * 短音频播放：元素自身静音（保证 play/ended 事件照常触发），
 	 * 实际声音由 AudioBufferSourceNode 从头播放。
 	 *
-	 * 只有「解码已经完成」的文件才走这条路；解码失败的（少数低码率 mp3）
-	 * 直接原生播放——至少声音完整，只是音量滑块对它无效。
+	 * 解码未完成时会等它解码（本地文件通常 10ms 左右），而不是退回原生播放：
+	 * iOS 同时播放多个 media element 会把旧的暂停，一退回原生，连续出牌时
+	 * 前面的音效就会整段消失。解码真失败时再解除静音，让原生声音兜底。
 	 */
 	function playShort(element, nativePlay, args) {
-		const ctx = ensureContext();
+		// 被电话 / Siri 打断后 context 可能是 suspended/interrupted，先尝试恢复
+		const ctx = resumeContext();
 		const url = element.currentSrc || element.src;
-		const cached = ctx && ctx.state === "running" && !debug.disabled && !undecodable.has(url) ? decodeCache.get(url) : null;
+		const ready = ctx && ctx.state === "running" && !debug.disabled && !undecodable.has(url);
+		const cached = ready ? decodeCache.get(url) : null;
 
-		if (!cached) {
-			// 没预热过：先解码，这次先用原生播放
-			if (ctx && ctx.state === "running" && !undecodable.has(url)) decodeAudio(url).catch(() => {});
-			return nativePlay.apply(element, args);
-		}
+		if (!ready) return nativePlay.apply(element, args);
+
+		// autoplay 已经通过 play 事件开始 buffer 播放了，这里不要再重启一遍
+		if (shortPlaybacks.has(element)) return nativePlay.apply(element, args);
 
 		stopShortPlayback(element);
 		element.muted = true;
 		const result = nativePlay.apply(element, args);
 		const startedAt = element.currentTime;
 
-		cached
+		// 还没解码过也要等它解码完再播，而不是退回原生播放：
+		// iOS 同时播放多个 media element 时会把先前的暂停，一旦退回原生，
+		// 对家连续出牌时前面的音效就会整段消失。
+		// 解码通常只要 10ms 左右，等一会儿比没声音好。
+		// 兜底：万一解码卡住（网络/解码器异常），不能一直静音着，
+		// 400ms 还没开始 buffer 就解除静音，让原生声音出来
+		const watchdog = setTimeout(() => {
+			if (!shortPlaybacks.has(element) && element.muted && !element.paused && !element.ended) {
+				element.muted = false;
+				debug.failed++;
+			}
+		}, 400);
+
+		(cached ?? decodeAudio(url))
 			.then(buffer => {
-				// 解码期间可能已经播完 / 换了 src。
-				// 不再检查 paused：iOS 可能因为并发播放把原生元素暂停，
-				// 但 buffer 本身是独立的，仍然应该出声。
-				if (element.ended) return;
-				if (shortPlaybacks.has(element)) return;
-				if ((element.currentSrc || element.src) !== url) return;
-
-				const source = ctx.createBufferSource();
-				source.buffer = buffer;
-				const gain = ctx.createGain();
-				gain.gain.value = volumeOf(element);
-				source.connect(gain);
-				if (debug.tap) {
-					const analyser = ctx.createAnalyser();
-					analyser.fftSize = 2048;
-					gain.connect(analyser);
-					analyser.connect(ctx.destination);
-					analysers.set(element, analyser);
-				} else {
-					gain.connect(ctx.destination);
-				}
-
-				// 正常情况下从 0 开始；如果解码拖了太久，就跟上元素进度，避免不同步
-				const offset = element.currentTime - startedAt > 0.25 ? element.currentTime : 0;
-				source.start(0, Math.min(offset, Math.max(0, buffer.duration - 0.02)));
-				shortPlaybacks.set(element, { source, gain });
-				debug.buffered++;
-
-				source.onended = () => {
-					const nativeStillPlaying = !element.paused && !element.ended;
-					stopShortPlayback(element);
-					// 原生元素如果被 iOS 暂停了，它永远不会触发 ended，
-					// 这里补一个，让游戏把元素回收掉
-					if (!nativeStillPlaying && !element.ended) {
-						element.dispatchEvent(new Event("ended"));
-					}
-				};
+				clearTimeout(watchdog);
+				startBuffer(element, buffer, startedAt);
 			})
 			.catch(error => {
 				// 解码失败就退回原生播放（至少能听到声音，只是音量不可控）
+				clearTimeout(watchdog);
 				debug.failed++;
 				element.muted = false;
 				console.warn("iOS: 音频解码失败", error);
+				Promise.resolve(nativePlay.apply(element, args)).catch(() => {});
 			});
 
 		return result;
+	}
+
+	/**
+	 * 用 AudioBufferSourceNode 播放，并让原生元素保持静音（只负责事件）。
+	 *
+	 * @param {HTMLAudioElement} element
+	 * @param {AudioBuffer} buffer
+	 * @param {number} [startedAt] 元素开始播放时的 currentTime，用来判断是否要追赶进度
+	 */
+	function startBuffer(element, buffer, startedAt) {
+		const ctx = ensureContext();
+		if (!ctx) return;
+		// 解码期间可能已经播完 / 换了 src。
+		// 不检查 paused：iOS 可能因为并发播放把原生元素暂停，
+		// 但 buffer 本身是独立的，仍然应该出声。
+		if (element.ended) return;
+		if (shortPlaybacks.has(element)) return;
+		const url = element.currentSrc || element.src;
+		if (!url) return;
+
+		element.muted = true;
+
+		const source = ctx.createBufferSource();
+		source.buffer = buffer;
+		const gain = ctx.createGain();
+		gain.gain.value = volumeOf(element);
+		source.connect(gain);
+		if (debug.tap) {
+			const analyser = ctx.createAnalyser();
+			analyser.fftSize = 2048;
+			gain.connect(analyser);
+			analyser.connect(ctx.destination);
+			analysers.set(element, analyser);
+		} else {
+			gain.connect(ctx.destination);
+		}
+
+		// 正常情况下从 0 开始；如果解码拖了太久，就跟上元素进度，避免不同步
+		const elapsed = typeof startedAt === "number" ? element.currentTime - startedAt : element.currentTime;
+		const offset = elapsed > 0.25 ? element.currentTime : 0;
+		try {
+			source.start(0, Math.min(offset, Math.max(0, buffer.duration - 0.02)));
+		} catch {
+			return;
+		}
+		shortPlaybacks.set(element, { source, gain });
+		debug.buffered++;
+
+		source.onended = () => {
+			const nativeStillPlaying = !element.paused && !element.ended;
+			stopShortPlayback(element);
+			// 原生元素如果被 iOS 暂停了，它永远不会触发 ended，
+			// 这里补一个，让游戏把元素回收掉
+			if (!nativeStillPlaying && !element.ended) {
+				element.dispatchEvent(new Event("ended"));
+			}
+		};
 	}
 
 	// MARK: - 属性 / 方法接管
@@ -411,13 +450,26 @@ function installIosAudioVolume() {
 		true
 	);
 
-	// 长音频开始播放时确保已经接进音频图（autoplay 不会经过 play() 补丁）
+	// autoplay 不会经过 play() 补丁：长音频要接进音频图，短音频要改用 buffer 播放，
+	// 否则它就以原生方式播出去（音量不受控，而且会被 iOS 的并发限制掐掉）
 	document.addEventListener(
 		"play",
 		event => {
 			const element = event.target;
 			if (!(element instanceof HTMLMediaElement)) return;
-			if (!Number.isFinite(element.duration) || element.duration > SHORT_AUDIO_SECONDS) routeMedia(element);
+			if (!Number.isFinite(element.duration) || element.duration > SHORT_AUDIO_SECONDS) {
+				routeMedia(element);
+				return;
+			}
+			if (debug.disabled || shortPlaybacks.has(element)) return;
+			const url = element.currentSrc || element.src;
+			if (!url || undecodable.has(url)) return;
+			element.muted = true;
+			decodeAudio(url)
+				.then(buffer => startBuffer(element, buffer))
+				.catch(() => {
+					element.muted = false;
+				});
 		},
 		true
 	);
