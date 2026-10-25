@@ -216,6 +216,18 @@ function installIosAudioVolume() {
 		return promise;
 	}
 
+	let silentFailures = 0;
+
+	/** buffer 没接上时解除静音；连续多次失败就整体退回原生播放，保证有声音 */
+	function fallbackToNative(element) {
+		if (!element.ended) element.muted = false;
+		silentFailures++;
+		if (silentFailures >= 5 && !debug.disabled) {
+			debug.disabled = true;
+			console.warn("iOS: 音频接管连续失败，本次会话改用原生播放");
+		}
+	}
+
 	function stopShortPlayback(element) {
 		const playback = shortPlaybacks.get(element);
 		if (!playback) return;
@@ -272,7 +284,8 @@ function installIosAudioVolume() {
 		(cached ?? decodeAudio(url))
 			.then(buffer => {
 				clearTimeout(watchdog);
-				startBuffer(element, buffer, startedAt);
+				// 没接上 buffer 就绝不能一直静音着
+				if (!startBuffer(element, buffer, startedAt)) fallbackToNative(element);
 			})
 			.catch(error => {
 				// 解码失败就退回原生播放（至少能听到声音，只是音量不可控）
@@ -292,17 +305,18 @@ function installIosAudioVolume() {
 	 * @param {HTMLAudioElement} element
 	 * @param {AudioBuffer} buffer
 	 * @param {number} [startedAt] 元素开始播放时的 currentTime，用来判断是否要追赶进度
+	 * @returns {boolean} 是否真的接上了 buffer
 	 */
 	function startBuffer(element, buffer, startedAt) {
 		const ctx = ensureContext();
-		if (!ctx) return;
+		if (!ctx) return false;
 		// 解码期间可能已经播完 / 换了 src。
 		// 不检查 paused：iOS 可能因为并发播放把原生元素暂停，
 		// 但 buffer 本身是独立的，仍然应该出声。
-		if (element.ended) return;
-		if (shortPlaybacks.has(element)) return;
+		if (element.ended) return true; // 已经播完了，不是失败
+		if (shortPlaybacks.has(element)) return true; // 已经在播了
 		const url = element.currentSrc || element.src;
-		if (!url) return;
+		if (!url) return false;
 
 		element.muted = true;
 
@@ -327,7 +341,7 @@ function installIosAudioVolume() {
 		try {
 			source.start(0, Math.min(offset, Math.max(0, buffer.duration - 0.02)));
 		} catch {
-			return;
+			return false;
 		}
 		shortPlaybacks.set(element, { source, gain });
 		debug.buffered++;
@@ -341,6 +355,7 @@ function installIosAudioVolume() {
 				element.dispatchEvent(new Event("ended"));
 			}
 		};
+		return true;
 	}
 
 	// MARK: - 属性 / 方法接管
@@ -466,7 +481,9 @@ function installIosAudioVolume() {
 			if (!url || undecodable.has(url)) return;
 			element.muted = true;
 			decodeAudio(url)
-				.then(buffer => startBuffer(element, buffer))
+				.then(buffer => {
+					if (!startBuffer(element, buffer)) fallbackToNative(element);
+				})
 				.catch(() => {
 					element.muted = false;
 				});
