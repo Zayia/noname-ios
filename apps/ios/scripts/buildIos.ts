@@ -57,15 +57,24 @@ if (skipWebBuild) {
 console.log("==> 2/5 准备 App 内置资源目录");
 stageWebAssets();
 
-// 把 WebKit 解不了的低码率 mp3 转成 AAC，让它们也能走 AudioBuffer 路径
+// 把 WebKit 解不了的 mp3 转成 AAC，让它们也能走 AudioBuffer 路径。
+// 除了本体的 audio/，扩展目录里的音频也要处理（有些扩展的“mp3”其实是 Ogg）。
 if (!args.has("--no-transcode")) {
 	const started = Date.now();
-	const result = transcodeAudio(join(webDir, "audio"));
-	if (result.converted || result.failed) {
+	const targets = [join(webDir, "audio"), join(webDir, "extension")].filter(dir => existsSync(dir));
+	const total = { converted: 0, failed: 0, bytesBefore: 0, bytesAfter: 0 };
+	for (const dir of targets) {
+		const result = transcodeAudio(dir);
+		total.converted += result.converted;
+		total.failed += result.failed;
+		total.bytesBefore += result.bytesBefore;
+		total.bytesAfter += result.bytesAfter;
+	}
+	if (total.converted || total.failed) {
 		const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 		console.log(
-			`    音频转码: ${result.converted} 个 → AAC，失败 ${result.failed} 个，` +
-				`${mb(result.bytesBefore)} → ${mb(result.bytesAfter)}，耗时 ${((Date.now() - started) / 1000).toFixed(0)}s`
+			`    音频转码: ${total.converted} 个 → AAC，失败 ${total.failed} 个，` +
+				`${mb(total.bytesBefore)} → ${mb(total.bytesAfter)}，耗时 ${((Date.now() - started) / 1000).toFixed(0)}s`
 		);
 	} else {
 		console.log("    音频转码: 无需转码");

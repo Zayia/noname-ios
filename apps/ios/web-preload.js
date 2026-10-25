@@ -256,8 +256,10 @@ function installIosAudioVolume() {
 
 		cached
 			.then(buffer => {
-				// 解码期间可能已经播完 / 被暂停 / 换了 src
-				if (element.paused || element.ended) return;
+				// 解码期间可能已经播完 / 换了 src。
+				// 不再检查 paused：iOS 可能因为并发播放把原生元素暂停，
+				// 但 buffer 本身是独立的，仍然应该出声。
+				if (element.ended) return;
 				if (shortPlaybacks.has(element)) return;
 				if ((element.currentSrc || element.src) !== url) return;
 
@@ -281,6 +283,16 @@ function installIosAudioVolume() {
 				source.start(0, Math.min(offset, Math.max(0, buffer.duration - 0.02)));
 				shortPlaybacks.set(element, { source, gain });
 				debug.buffered++;
+
+				source.onended = () => {
+					const nativeStillPlaying = !element.paused && !element.ended;
+					stopShortPlayback(element);
+					// 原生元素如果被 iOS 暂停了，它永远不会触发 ended，
+					// 这里补一个，让游戏把元素回收掉
+					if (!nativeStillPlaying && !element.ended) {
+						element.dispatchEvent(new Event("ended"));
+					}
+				};
 			})
 			.catch(error => {
 				// 解码失败就退回原生播放（至少能听到声音，只是音量不可控）
@@ -323,7 +335,7 @@ function installIosAudioVolume() {
 	 * 老用户可能还缓存着旧的 mp3 字节（Cache-Control 之前是 7 天），
 	 * 换了内容也拿不到新文件。加一个固定的 `?v=` 让 URL 变化，强制重新取一次。
 	 */
-	const AUDIO_CACHE_VERSION = "aac2";
+	const AUDIO_CACHE_VERSION = "aac3";
 	function versionedAudioUrl(url) {
 		if (!url || typeof url !== "string") return url;
 		// blob:/data: 不处理；其余（绝对 URL、"/audio/..."、以及 lib.assetURL 为空时的
@@ -410,8 +422,10 @@ function installIosAudioVolume() {
 		true
 	);
 
-	// 暂停 / 换源时停掉 buffer，避免残留声音
-	["pause", "emptied", "abort"].forEach(type => {
+	// 换源时停掉 buffer，避免残留声音。
+	// 注意：不能监听 pause —— iOS 同时播放多个 media element 时会把旧的暂停，
+	// 如果我们跟着停 buffer，就会出现「对面的牌/台词没声音」。
+	["emptied", "abort"].forEach(type => {
 		document.addEventListener(
 			type,
 			event => {
