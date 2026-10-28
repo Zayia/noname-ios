@@ -422,9 +422,13 @@ function installIosAudioVolume() {
 			if (this.tagName === "AUDIO" && Number.isFinite(duration) && duration > 0 && duration <= SHORT_AUDIO_SECONDS) {
 				return playShort(this, nativePlay, args);
 			}
-			try {
-				routeMedia(this);
-			} catch {}
+			// 时长未知时先别接管：MediaElementSource 会吞掉开头 0.3~0.6 秒，
+			// 对 1 秒左右的音效来说等于没声音；等 loadedmetadata 再决定
+			if (Number.isFinite(duration) && duration > SHORT_AUDIO_SECONDS) {
+				try {
+					routeMedia(this);
+				} catch {}
+			}
 			return nativePlay.apply(this, args);
 		};
 	}
@@ -460,7 +464,14 @@ function installIosAudioVolume() {
 			if (debug.disabled) return;
 			const url = element.currentSrc || element.src;
 			if (undecodable.has(url)) return;
-			decodeAudio(url).catch(() => {});
+			decodeAudio(url)
+				.then(buffer => {
+					// autoplay 的元素在 play 事件触发时时长还是 NaN，这里补上 buffer 播放
+					if (element.paused || element.ended || shortPlaybacks.has(element)) return;
+					element.muted = true;
+					if (!startBuffer(element, buffer)) fallbackToNative(element);
+				})
+				.catch(() => {});
 		},
 		true
 	);
@@ -472,7 +483,9 @@ function installIosAudioVolume() {
 		event => {
 			const element = event.target;
 			if (!(element instanceof HTMLMediaElement)) return;
-			if (!Number.isFinite(element.duration) || element.duration > SHORT_AUDIO_SECONDS) {
+			// 时长未知：交给 loadedmetadata 处理，绝不在这里接 MediaElementSource
+			if (!Number.isFinite(element.duration) || element.duration <= 0) return;
+			if (element.duration > SHORT_AUDIO_SECONDS) {
 				routeMedia(element);
 				return;
 			}
