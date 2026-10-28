@@ -53,6 +53,7 @@ function installIosAudioVolume() {
 	const mediaSources = new WeakMap(); // element -> MediaElementAudioSourceNode
 	const mediaGains = new WeakMap(); // element -> GainNode
 	const shortPlaybacks = new WeakMap(); // element -> { source, gain }
+	const stoppedSources = new WeakSet(); // 被主动 stop 的 source
 	const desiredVolumes = new WeakMap(); // element -> 游戏设定的音量
 	const analysers = new WeakMap(); // 调试用
 	const decodeCache = new Map(); // url -> Promise<AudioBuffer>
@@ -232,6 +233,7 @@ function installIosAudioVolume() {
 		const playback = shortPlaybacks.get(element);
 		if (!playback) return;
 		shortPlaybacks.delete(element);
+		stoppedSources.add(playback.source);
 		try {
 			playback.source.stop();
 		} catch {}
@@ -344,9 +346,12 @@ function installIosAudioVolume() {
 			return false;
 		}
 		shortPlaybacks.set(element, { source, gain });
+		element.__nonameBuffered = true;
 		debug.buffered++;
 
 		source.onended = () => {
+			// 被主动 stop 的不算自然播完，不要合成 ended 让游戏提前回收元素
+			if (stoppedSources.has(source)) return;
 			const nativeStillPlaying = !element.paused && !element.ended;
 			stopShortPlayback(element);
 			// 原生元素如果被 iOS 暂停了，它永远不会触发 ended，
@@ -530,28 +535,15 @@ function installIosAudioVolume() {
 		true
 	);
 
-	// 换源时停掉 buffer，避免残留声音。
-	// 注意：不能监听 pause —— iOS 同时播放多个 media element 时会把旧的暂停，
-	// 如果我们跟着停 buffer，就会出现「对面的牌/台词没声音」。
-	["emptied", "abort"].forEach(type => {
-		document.addEventListener(
-			type,
-			event => {
-				const element = event.target;
-				if (element instanceof HTMLMediaElement) stopShortPlayback(element);
-			},
-			true
-		);
-	});
+	// 不再监听 emptied / abort / loadstart / pause 去停 buffer：
+	// iOS 27 并发播放时会主动卸载或重载 media element，这些事件都会误触发，
+	// 一停就把已经出声的音效掐掉（表现为「同时出牌时有的牌没声音」）。
+	// buffer 都是 1 秒级的短音效，放完由 source.onended 自然收尾即可。
 
-	document.addEventListener(
-		"ended",
-		event => {
-			const element = event.target;
-			if (element instanceof HTMLMediaElement) stopShortPlayback(element);
-		},
-		true
-	);
+	// 不要监听 ended 去停 buffer：
+	// iOS 27 上没加载成功的元素也会立刻发 ended（duration 为 0），
+	// 跟着停就把刚起头的 buffer 掐掉了。buffer 很短，让它自己播完即可。
+
 
 	// 从后台回来时 context 可能被挂起
 	document.addEventListener("visibilitychange", () => {

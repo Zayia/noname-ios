@@ -405,6 +405,10 @@ Documents/Noname/
   不会经过 `play()`，preload 在 `play` 事件里同样会把它们切换到 buffer 播放，
   否则会以原生方式播出去（音量不受控，还可能被 iOS 的并发限制掐掉）。
 
+  **iOS 27 的并发卸载**：同时创建多个 `media element` 时，系统会主动暂停甚至卸载一部分，
+  触发 `emptied` / `ended`（`duration` 为 0）。这些事件都不能用来停 buffer，
+  否则同时出牌时先起头的音效会被直接掐掉。现在 buffer 只在自然播完时收尾。
+
   **时长未知时不接 MediaElementSource**：`play` 事件可能在元数据加载前就触发，
   这时如果直接把元素接进音频图，开头 0.3~0.6 秒会被吞掉——对 1 秒左右的出牌音效
   来说等于没声音。现在改为等 `loadedmetadata` 再决定：短音频走 buffer，长音频才接图。
