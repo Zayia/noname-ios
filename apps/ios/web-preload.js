@@ -59,6 +59,7 @@ function installIosAudioVolume() {
 	const undecodable = new Set(); // 解码失败的 URL，之后直接走原生播放
 
 	const debug = {
+		build: "2026-10-28-echo",
 		state: "idle",
 		routed: 0,
 		buffered: 0,
@@ -158,13 +159,12 @@ function installIosAudioVolume() {
 				console.warn("iOS: 接管媒体音量失败", error);
 				return null;
 			}
+			// 不要在一首播完后拆掉 gain：BGM 元素会循环复用，
+			// 拆掉后下一首会在「没人再设音量」的情况下以全音量播放（iOS 27 上就是这样）
 			element.addEventListener("ended", () => {
+				if (!mediaGains.has(element)) return;
 				const gain = mediaGains.get(element);
-				if (!gain) return;
-				try {
-					gain.disconnect();
-				} catch {}
-				mediaGains.delete(element);
+				if (gain) gain.gain.value = volumeOf(element);
 			});
 		}
 
@@ -500,6 +500,32 @@ function installIosAudioVolume() {
 				.catch(() => {
 					element.muted = false;
 				});
+		},
+		true
+	);
+
+	// 「真正开始出声」时再兜一次底：iOS 27 上 play/loadedmetadata 的先后顺序变了，
+	// 只靠那两个事件可能漏掉接管（BGM 会以全音量原生播放、短音效也会绕过 buffer）。
+	document.addEventListener(
+		"playing",
+		event => {
+			const element = event.target;
+			if (!(element instanceof HTMLMediaElement)) return;
+			if (debug.disabled) return;
+			if (!Number.isFinite(element.duration) || element.duration <= 0) return;
+			if (element.duration > SHORT_AUDIO_SECONDS) {
+				if (!mediaGains.has(element)) routeMedia(element);
+				return;
+			}
+			if (shortPlaybacks.has(element)) return;
+			const url = element.currentSrc || element.src;
+			if (!url || undecodable.has(url)) return;
+			decodeAudio(url)
+				.then(buffer => {
+					if (element.ended || shortPlaybacks.has(element)) return;
+					if (!startBuffer(element, buffer)) fallbackToNative(element);
+				})
+				.catch(() => {});
 		},
 		true
 	);
