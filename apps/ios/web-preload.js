@@ -414,8 +414,32 @@ function installIosAudioVolume() {
 				return srcDescriptor.get.call(this);
 			},
 			set(value) {
-				srcDescriptor.set.call(this, versionedAudioUrl(value));
+				const url = versionedAudioUrl(value);
+				srcDescriptor.set.call(this, url);
+				maybePlayShortFromSource(this, url);
 			},
+		});
+	}
+
+	/**
+	 * 最后的兜底：iOS 27 在并发时会直接卸载 media element（duration 恒为 0），
+	 * 这时 play/playing 事件可能完全不触发，声音就没了。
+	 * 只要元素带 autoplay（游戏里的 playAudio 都是这样），
+	 * 就自己解码并直接播放，不依赖原生元素是否加载成功。
+	 */
+	function maybePlayShortFromSource(element, url) {
+		if (debug.disabled || !url || undecodable.has(url)) return;
+		if (element.tagName !== "AUDIO") return;
+		if (!element.autoplay) return;
+		queueMicrotask(() => {
+			if (element.__nonameBuffered || element.ended) return;
+			decodeAudio(url)
+				.then(buffer => {
+					if (element.__nonameBuffered || element.ended) return;
+					if (buffer.duration > SHORT_AUDIO_SECONDS) return;
+					startBuffer(element, buffer);
+				})
+				.catch(() => {});
 		});
 	}
 
