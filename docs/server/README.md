@@ -196,6 +196,28 @@ if (URL.canParse(ip) && (ip.startsWith("ws://") || ip.startsWith("wss://"))) {
 > 如果客户端「联机」设置里勾了「使用 WSS 协议」，不带前缀的地址会走 `wss://`——
 > 服务端是明文的，这样连不上。`ws://` 前缀可以覆盖这个开关。
 
+### 4.3 「不在受信任的服务器列表」提示
+
+第一次连一个新服务器，客户端会弹：
+
+> 您登录的服务器不在受信任的列表中，是否要信任来自服务器的代码？
+
+**选「取消」会进入隔离沙盒**，部分联机功能会受限（表现为房间列表空、建房失败、进房后卡住），
+很多人会误以为是「域名连不上」。这里不是域名白名单，判断依据是你的**选择记录**：
+
+- 选择结果存在 `localStorage` 的 `security_grantedServers` 里，按 IP/域名分别记；
+- 选错了可以重置：**联机菜单 → 更多 → 重置受信任的服务器列表**（会提示重载游戏）；
+- 代码里的「内置白名单」默认是空的（`TRUSTED_IPS = []`、`TRUSTED_IP_MD5 = []`），
+  想把自己服务器加成默认信任，需要改 `apps/core/noname/util/sandbox/security.js`：
+
+  ```js
+  const TRUSTED_IPS = Object.freeze(["gua.ee"]);         // 直接写 IP / 域名
+  // 或者用 MD5 形式（md5("noname_server" + ip)），避免明文
+  const TRUSTED_IP_MD5 = Object.freeze(["xxxxxxxx..."]);
+  ```
+
+  但这是**改客户端**，不是服务端设置；iOS 版要重新打包才生效。
+
 ---
 
 ## 5. 路由器与公网
