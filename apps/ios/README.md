@@ -1,8 +1,8 @@
+# 无名杀 iOS 版
+
 > **⚠️ 本 iOS 客户端已停止更新。** 官方仓库现已提供 iOS 手机版（`apps/mobile`），
 > 建议改用官方客户端：<https://github.com/libnoname/noname/tree/main/apps/mobile>。
 > 本仓库的 [服务端部署文档](../../docs/server/) 仍然可用。
-
-# 无名杀 iOS 版
 
 在 iPhone / iPad 上运行《无名杀》的原生客户端。产物是一个**未签名 IPA**，玩家用自己的 Apple ID（或自备证书）签名后安装，不需要上架 App Store，也不需要 Apple 开发者账号。
 
