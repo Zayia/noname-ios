@@ -1,15 +1,37 @@
-# 无名杀 iOS 客户端（自动构建）
+# 无名杀 iOS 客户端（已停止更新）
+
+> ## ⚠️ 项目状态：已停止更新（2026-10-29）
+>
+> 官方仓库 [`libnoname/noname`](https://github.com/libnoname/noname) 已经提供 **iOS 手机版**
+> （`apps/mobile`，Capacitor 构建，`pnpm -F @noname/mobile build:ios`），
+> 因此本仓库的 iOS 客户端壳（`apps/ios/`）和自动打包流水线**不再更新**，也不会再发布新的 Release。
+>
+> 建议直接使用官方客户端：
+>
+> - 官方客户端源码与构建说明：<https://github.com/libnoname/noname/tree/main/apps/mobile>
+> - 官方 iOS 构建需要 macOS + Xcode 26+，以及 Apple Developer Team 签名
+>
+> **本仓库的 [`docs/server/`](docs/server/) 服务端部署方案仍然可用、仍会维护。**
+> 它对应官方 `packages/server` 的 WebSocket 中继，与客户端版本无关，
+> 官方客户端同样可以连这套服务器。
+
+---
+
 
 《无名杀》的 iOS 原生客户端壳 + 自动打包流水线。仓库里只放 iOS 外壳（`apps/ios/`）和 GitHub Actions
 配置；构建时由 CI 拉取官方仓库最新代码，把 `apps/ios` 叠加进去，编译成**未签名 IPA** 并发布到 Releases。
 
-## 下载安装
+## 下载安装（历史版本）
+
+> 这里的 Release 是停更前的构建，不会再有新版本；新项目请使用官方客户端。
 
 1. 打开 [Releases](../../releases) 下载最新的 `noname-unsigned-full.ipa`；
 2. 用 **Sideloadly** / **AltStore** / **轻松签** / **TrollStore** 自签安装；
 3. 免费 Apple ID 签名的 App **7 天有效**；过期后重新签名**覆盖安装**即可，不要先删除 App（会丢存档）。
 
-## 自动更新
+## 自动更新（已停止）
+
+> 定时构建已经关闭，下面的说明仅用于记录历史行为；如需临时自己构建，仍可在 Actions 里手动触发。
 
 - 每天 **北京时间 02:30** 检查一次官方 [`libnoname/noname`](https://github.com/libnoname/noname) 的**最新正式版标签**（latest）；
   默认不跟 `main`——`main` 上常是「暂未发布，仅供测试」的版本，版本号比正式版大，

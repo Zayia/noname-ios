@@ -1,6 +1,7 @@
 name: Build iOS (unsigned IPA)
 
-# 自动构建：每天检查一次官方仓库，有新提交就重新打包，产物发布到 Releases。
+# 已停止更新：定时构建和 push 触发都已关闭，只保留手动 workflow_dispatch。
+# 官方现在提供 iOS 手机版（apps/mobile），本项目不再维护。
 #
 # 工作方式：
 #   1. 用本仓库里的 apps/ios（iOS 客户端壳）作为「补丁」；
@@ -31,14 +32,6 @@ on:
         required: false
         default: latest
         type: string
-  schedule:
-    # GitHub 的 cron 是 UTC；18:30 UTC = 北京时间 02:30
-    - cron: "30 18 * * *"
-  push:
-    branches: [main]
-    paths:
-      - "apps/ios/**"
-      - ".github/workflows/ios.yml"
 
 permissions:
   contents: write
